@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GSB Kilis Kütüphane Sistemi</title>
+    <!-- Tailwind CSS ve FontAwesome CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDK (Modüler Sürüm) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDUYAd8DTmabT7rtwzLPo0wJJ7NYSNH4",
+            authDomain: "kutuphanesistemi-cb943.firebaseapp.com",
+            projectId: "kutuphanesistemi-cb943",
+            storageBucket: "kutuphanesistemi-cb943.appspot.com",
+            messagingSenderId: "1064215887456",
+            appId: "1:1064215887456:web:f349ee5b77519efeff0d05",
+            measurementId: "G-71E62Y4E8R"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        let books = [];
+        let loans = [];
+        let isAdmin = false;
+
+        document.getElementById('currentDate').innerText = new Date().toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
+        document.getElementById('loanDate').valueAsDate = new Date();
+
+        function initRealtimeSync() {
+            onSnapshot(collection(db, "books"), (snapshot) => {
+                books = [];
+                snapshot.forEach((doc) => {
+                    books.push({ id: doc.id, ...doc.data() });
+                });
+                renderAll();
+            });
+
+            onSnapshot(collection(db, "loans"), (snapshot) => {
+                loans = [];
+                snapshot.forEach((doc) => {
+                    loans.push({ id: doc.id, ...doc.data() });
+                });
+                renderAll();
+            });
+        }
+
+        // Admin Giriş Fonksiyonu
+        window.toggleAdminMode = function() {
+            if (!isAdmin) {
+                const pass = prompt("Yönetici şifresini giriniz:");
+                if (pass === "1234") {
+                    isAdmin = true;
+                    document.getElementById('adminPanelContainer').classList.remove('hidden');
+                    document.getElementById('adminLoansSection').classList.remove('hidden');
+                    document.getElementById('adminStatsContainer').classList.remove('hidden');
+                    document.getElementById('adminLoginBtn').innerHTML = '<i class="fa-solid fa-lock-open mr-1"></i> Yöneticiyi Kapat';
+                    document.getElementById('adminLoginBtn').classList.replace('bg-slate-800', 'bg-orange-600');
+                    alert("Yönetim paneli ve hassas kayıtlar açıldı!");
+                } else if (pass !== null) {
+                    alert("Hatalı şifre!");
+                }
+            } else {
+                isAdmin = false;
+                document.getElementById('adminPanelContainer').classList.add('hidden');
+                document.getElementById('adminLoansSection').classList.add('hidden');
+                document.getElementById('adminStatsContainer').classList.add('hidden');
+                document.getElementById('adminLoginBtn').innerHTML = '<i class="fa-solid fa-lock mr-1"></i> Yönetici Girişi';
+                document.getElementById('adminLoginBtn').classList.replace('bg-orange-600', 'bg-slate-800');
+                alert("Yönetici oturumu kapatıldı. Hassas veriler gizlendi.");
+            }
+            renderAll();
+        }
+
+        // Görseli Base64 formatına çevirme
+        function getBaseImage(file) {
+            return new Promise((resolve, reject) => {
+                if (!file) {
+                    resolve("https://images.unsplash.com/photo-1543002588-bfa74002ed7e?auto=format&fit=crop&q=80&w=200");
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = error => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Kitap Ekle (Yayınevi Dahil)
+        document.getElementById('bookForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            if(!isAdmin) return alert("Yetkiniz yok!");
+            
+            const title = document.getElementById('bookTitle').value.trim();
+            const author = document.getElementById('bookAuthor').value.trim();
+            const publisher = document.getElementById('bookPublisher').value.trim() || "Belirtilmemiş";
+            const category = document.getElementById('bookCategory').value;
+            const description = document.getElementById('bookDescription').value.trim();
+            const quantity = parseInt(document.getElementById('bookQuantity').value);
+            const imageFile = document.getElementById('bookImageFile').files[0];
+
+            try {
+                const imageUrl = await getBaseImage(imageFile);
+                await addDoc(collection(db, "books"), { 
+                    title, 
+                    author, 
+                    publisher,
+                    category, 
+                    description: description || "Bu kitap için henüz açıklama girilmedi.", 
+                    quantity, 
+                    imageUrl 
+                });
+                this.reset();
+                document.getElementById('bookQuantity').value = "1";
+                alert("Kitap başarıyla eklendi!");
+            } catch (error) {
+                alert("Hata: " + error.message);
+            }
+        });
+
+        // Ödünç Ver
+        document.getElementById('loanForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            if(!isAdmin) return alert("Yetkiniz yok!");
+            const bookId = document.getElementById('loanBookSelect').value;
+            const memberName = document.getElementById('loanMemberName').value.trim();
+            const loanDate = document.getElementById('loanDate').value;
+            const periodDays = parseInt(document.getElementById('loanPeriodDays').value);
+
+            const book = books.find(b => b.id === bookId);
+            if(!book) return;
+
+            const activeLoansForBook = loans.filter(l => l.bookId === bookId && l.status === 'Aktif').length;
+            if(activeLoansForBook >= book.quantity) {
+                alert('Bu kitaptan rafta kalmadı!');
+                return;
+            }
+
+            const d = new Date(loanDate);
+            d.setDate(d.getDate() + periodDays);
+            const dueDate = d.toISOString().split('T')[0];
+
+            try {
+                await addDoc(collection(db, "loans"), {
+                    bookId, bookTitle: book.title, memberName, loanDate, dueDate, status: 'Aktif'
+                });
+                this.reset();
+                document.getElementById('loanDate').valueAsDate = new Date();
+                document.getElementById('loanPeriodDays').value = "14";
+            } catch (error) {
+                alert("Hata: " + error.message);
+            }
+        });
+
+        window.returnBook = async function(loanId) {
+            if(!isAdmin) return alert("Yetkiniz yok!");
+            try {
+                await updateDoc(doc(db, "loans", loanId), { status: 'Teslim Edildi' });
+            } catch (error) {
+                alert("Hata: " + error.message);
+            }
+        }
+
+        window.deleteBook = async function(bookId) {
+            if(!isAdmin) return alert("Yetkiniz yok!");
+            if(confirm('Bu kitabı silmek istediğinize emin misiniz?')) {
+                try {
+                    await deleteDoc(doc(db, "books", bookId));
+                } catch (error) {
+                    alert("Hata: " + error.message);
+                }
+            }
+        }
+
+        window.showBookDetail = function(title, author, publisher, category, description, imageUrl) {
+            document.getElementById('modalImage').src = imageUrl;
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalAuthor').innerText = "Yazar: " + author;
+            document.getElementById('modalPublisher').innerText = "Yayınevi: " + publisher;
+            document.getElementById('modalCategory').innerText = "Tür: " + category;
+            document.getElementById('modalDesc').innerText = description;
+            document.getElementById('bookModal').classList.remove('hidden');
+        }
+
+        window.closeModal = function() {
+            document.getElementById('bookModal').classList.add('hidden');
+        }
+
+        document.getElementById('searchInput').addEventListener('input', renderBooks);
+        document.getElementById('categoryFilter').addEventListener('change', renderBooks);
+        document.getElementById('sortSelect').addEventListener('change', renderBooks);
+
+        function renderAll() {
+            renderStats();
+            renderBookSelect();
+            renderBooks();
+            renderPublisherStats();
+            if(isAdmin) renderLoans();
+        }
+
+        function renderStats() {
+            document.getElementById('statTotalTitles').innerText = books.length;
+            document.getElementById('statTotalCopies').innerText = books.reduce((sum, b) => sum + b.quantity, 0);
+            
+            let childrenBooksCount = books.filter(b => b.category === 'Çocuk Kitapları').reduce((sum, b) => sum + b.quantity, 0);
+            document.getElementById('statChildrenCopies').innerText = childrenBooksCount;
+            
+            if(isAdmin) {
+                let activeLoans = loans.filter(l => l.status === 'Aktif');
+                let overdueCount = activeLoans.filter(l => new Date(l.dueDate) < new Date()).length;
+                document.getElementById('statBorrowedCount').innerText = activeLoans.length;
+                document.getElementById('statOverdueCount').innerText = overdueCount;
+                document.getElementById('overdueAlertContainer').classList.toggle('hidden', overdueCount === 0);
+            }
+        }
+
+        // Yayınevi Dağılım İstatistikleri
+        function renderPublisherStats() {
+            const container = document.getElementById('publisherStatsContainer');
+            if(!container) return;
+            container.innerHTML = '';
+
+            if(books.length === 0) {
+                container.innerHTML = '<p class="text-xs text-purple-400">Henüz kitap eklenmedi.</p>';
+                return;
+            }
+
+            let pubCounts = {};
+            let totalPhysical = 0;
+            books.forEach(b => {
+                let pub = b.publisher || 'Belirtilmemiş';
+                let qty = b.quantity || 1;
+                pubCounts[pub] = (pubCounts[pub] || 0) + qty;
+                totalPhysical += qty;
+            });
+
+            for (let [pub, count] of Object.entries(pubCounts)) {
+                let percent = Math.round((count / totalPhysical) * 100);
+                container.innerHTML += `
+                    <div>
+                        <div class="flex justify-between text-xs text-purple-200 mb-1">
+                            <span class="font-medium text-white"><i class="fa-solid fa-building text-orange-400 mr-1.5"></i>${pub}</span>
+                            <span>${count} adet (%${percent})</span>
+                        </div>
+                        <div class="w-full bg-[#1f1738] rounded-full h-2 overflow-hidden border border-purple-900/40">
+                            <div class="bg-gradient-to-r from-orange-500 to-purple-600 h-2 rounded-full" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function renderBookSelect() {
+            const select = document.getElementById('loanBookSelect');
+            select.innerHTML = '<option value="">Kitap seçiniz...</option>';
+            books.forEach(b => {
+                const activeCount = loans.filter(l => l.bookId === b.id && l.status === 'Aktif').length;
+                const available = b.quantity - activeCount;
+                select.innerHTML += `<option value="${b.id}">${b.title} - ${b.author} (${b.publisher || 'Belirtilmemiş'}) (Rafta: ${available})</option>`;
+            });
+        }
+
+        function renderBooks() {
+            const tbody = document.getElementById('booksTableBody');
+            tbody.innerHTML = '';
+
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const selectedCategory = document.getElementById('categoryFilter').value;
+            const sortOrder = document.getElementById('sortSelect').value;
+
+            let filteredBooks = books.filter(b => {
+                const matchesSearch = b.title.toLowerCase().includes(searchTerm) || b.author.toLowerCase().includes(searchTerm) || (b.publisher || '').toLowerCase().includes(searchTerm);
+                const matchesCategory = selectedCategory === 'Tümü' || b.category === selectedCategory;
+                return matchesSearch && matchesCategory;
+            });
+
+            filteredBooks.sort((a, b) => {
+                if(sortOrder === 'az') return a.title.localeCompare(b.title, 'tr');
+                else return b.title.localeCompare(a.title, 'tr');
+            });
+
+            if(filteredBooks.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-purple-300 text-xs">Kayıtlı kitap bulunamadı.</td></tr>`;
+                return;
+            }
+
+            filteredBooks.forEach(b => {
+                const activeCount = loans.filter(l => l.bookId === b.id && l.status === 'Aktif').length;
+                const available = Math.max(0, b.quantity - activeCount);
+                const catBadge = b.category === 'Çocuk Kitapları' ? 'bg-pink-900/40 text-pink-300 border-pink-700/50' : 'bg-purple-900/40 text-purple-300 border-purple-700/50';
+                const imgSrc = b.imageUrl || "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?auto=format&fit=crop&q=80&w=200";
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-purple-900/20 transition cursor-pointer border-b border-purple-900/30" onclick="showBookDetail('${b.title.replace(/'/g, "\\'")}', '${b.author.replace(/'/g, "\\'")}', '${(b.publisher || 'Belirtilmemiş').replace(/'/g, "\\'")}', '${b.category || 'Roman'}', '${(b.description || '').replace(/'/g, "\\'")}', '${imgSrc}')">
+                        <td class="p-4 flex items-center gap-3">
+                            <img src="${imgSrc}" class="w-10 h-12 object-cover rounded shadow border border-purple-800">
+                            <div>
+                                <span class="font-medium text-white block">${b.title}</span>
+                                <span class="text-xs text-orange-400 hover:underline">Detay / Açıklama Gör</span>
+                            </div>
+                        </td>
+                        <td class="p-4 text-purple-200">${b.author}</td>
+                        <td class="p-4 text-purple-300 text-xs"><i class="fa-solid fa-building text-orange-400/70 mr-1"></i>${b.publisher || 'Belirtilmemiş'}</td>
+                        <td class="p-4"><span class="px-3 py-1 rounded-full text-xs font-medium border ${catBadge}">${b.category || 'Roman'}</span></td>
+                        <td class="p-4 text-center font-semibold text-white">${b.quantity}</td>
+                        <td class="p-4 text-center">
+                            <span class="px-3 py-1 rounded-full text-xs font-semibold ${available > 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-red-950 text-red-400 border border-red-800'}">
+                                ${available} Rafta
+                            </span>
+                        </td>
+                        <td class="p-4 text-right" onclick="event.stopPropagation()">
+                            ${isAdmin ? `<button onclick="deleteBook('${b.id}')" class="text-red-400 hover:text-red-300 p-1.5 transition text-xs" title="Sil"><i class="fa-solid fa-trash"></i></button>` : `<span class="text-xs text-purple-400">-</span>`}
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function renderLoans() {
+            if(!isAdmin) return;
+            const tbody = document.getElementById('loansTableBody');
+            tbody.innerHTML = '';
+
+            if(loans.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-purple-300 text-xs">Henüz ödünç verilen kitap yok.</td></tr>`;
+                return;
+            }
+
+            const sortedLoans = [...loans].reverse();
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            sortedLoans.forEach(l => {
+                const dueDateObj = new Date(l.dueDate);
+                dueDateObj.setHours(0,0,0,0);
+
+                let statusBadge = '';
+                if(l.status === 'Teslim Edildi') {
+                    statusBadge = `<span class="px-2.5 py-1 rounded-full text-xs font-medium bg-purple-900/40 text-purple-300">Teslim Edildi</span>`;
+                } else if(dueDateObj < today) {
+                    const diffDays = Math.ceil(Math.abs(today - dueDateObj) / (1000 * 60 * 60 * 24));
+                    statusBadge = `<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-red-900/60 text-red-300 animate-pulse">Gecikti (${diffDays} gün)</span>`;
+                } else {
+                    statusBadge = `<span class="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-900/40 text-blue-300">Devam Ediyor</span>`;
+                }
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-purple-900/20 transition border-b border-purple-900/30">
+                        <td class="p-4 font-medium text-white">${l.bookTitle}</td>
+                        <td class="p-4 text-purple-200">${l.memberName}</td>
+                        <td class="p-4 text-purple-300 text-xs">${l.loanDate}</td>
+                        <td class="p-4 text-purple-300 text-xs">${l.dueDate}</td>
+                        <td class="p-4">${statusBadge}</td>
+                        <td class="p-4 text-right">
+                            ${l.status === 'Aktif' ? `<button onclick="returnBook('${l.id}')" class="bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white px-3 py-1.5 rounded-xl text-xs font-medium transition shadow">İade Al</button>` : `<span class="text-xs text-purple-500">Tamamlandı</span>`}
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        initRealtimeSync();
+    </script>
+</head>
+<body class="p-4 md:p-8 bg-[#0b0716] text-purple-100 min-h-screen">
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        
+        <!-- BAŞLIK VE ADMIN GİRİŞ BUTONU -->
+        <header class="bg-[#140e26] border border-purple-900/50 p-6 rounded-3xl shadow-2xl flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-3.5 rounded-2xl bg-gradient-to-tr from-orange-600 to-purple-600 text-white text-2xl shadow-lg">
+                    <i class="fa-solid fa-book-open-reader"></i>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white tracking-wide">GSB Kilis Kütüphane Sistemi</h1>
+                    <p class="text-xs text-purple-400">Ziyaretçi ve Kitap Arama Ekranı</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="text-xs text-purple-300 bg-[#1f1738] px-4 py-2.5 rounded-2xl border border-purple-800/40 hidden sm:inline-block">
+                    <i class="fa-regular fa-calendar-days text-orange-400 mr-1.5"></i> <span id="currentDate"></span>
+                </span>
+                <button id="adminLoginBtn" onclick="toggleAdminMode()" class="bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-2xl text-xs font-medium transition shadow-lg border border-purple-700/50">
+                    <i class="fa-solid fa-lock mr-1.5"></i> Yönetici Girişi
+                </button>
+            </div>
+        </header>
+
+        <!-- İSTATİSTİK ÖZETİ (Ziyaretçiler için) -->
+        <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="bg-[#140e26] border border-purple-900/50 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                    <p class="text-xs text-purple-400 font-medium">Toplam Kitap Çeşidi</p>
+                    <h3 class="text-2xl font-bold text-white mt-1" id="statTotalTitles">0</h3>
+                </div>
+                <div class="p-3 bg-purple-950 text-purple-400 rounded-2xl text-xl border border-purple-900"><i class="fa-solid fa-book"></i></div>
+            </div>
+            <div class="bg-[#140e26] border border-purple-900/50 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                    <p class="text-xs text-purple-400 font-medium">Toplam Fiziksel Adet</p>
+                    <h3 class="text-2xl font-bold text-white mt-1" id="statTotalCopies">0</h3>
+                </div>
+                <div class="p-3 bg-purple-950 text-emerald-400 rounded-2xl text-xl border border-purple-900"><i class="fa-solid fa-layer-group"></i></div>
+            </div>
+            <div class="bg-[#140e26] border border-purple-900/50 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                    <p class="text-xs text-purple-400 font-medium">Çocuk Kitapları Adedi</p>
+                    <h3 class="text-2xl font-bold text-pink-400 mt-1" id="statChildrenCopies">0</h3>
+                </div>
+                <div class="p-3 bg-purple-950 text-pink-400 rounded-2xl text-xl border border-purple-900"><i class="fa-solid fa-child-reaching"></i></div>
+            </div>
+        </section>
+
+        <!-- ÖDÜNÇ VE GECİKENLER İSTATİSTİĞİ (SADECE ADMİN) -->
+        <section id="adminStatsContainer" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="bg-amber-950/40 border border-amber-800/50 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                    <p class="text-xs text-amber-300 font-medium">Aktif Ödünç Verilenler (Gizli Admin)</p>
+                    <h3 class="text-2xl font-bold text-amber-200 mt-1" id="statBorrowedCount">0</h3>
+                </div>
+                <div class="p-3 bg-amber-900/50 text-amber-300 rounded-2xl text-xl"><i class="fa-solid fa-hand-holding-hand"></i></div>
+            </div>
+            <div class="bg-red-950/40 border border-red-800/50 p-5 rounded-3xl shadow-xl flex items-center justify-between">
+                <div>
+                    <p class="text-xs text-red-300 font-medium">Süresi Geçenler (Gizli Admin)</p>
+                    <h3 class="text-2xl font-bold text-red-200 mt-1" id="statOverdueCount">0</h3>
+                </div>
+                <div class="p-3 bg-red-900/50 text-red-300 rounded-2xl text-xl"><i class="fa-solid fa-triangle-exclamation"></i></div>
+            </div>
+        </section>
+
+        <!-- GECİKENLER UYARI ALANI (SADECE ADMİN) -->
+        <div id="overdueAlertContainer" class="hidden bg-red-950/60 border-l-4 border-red-500 p-4 rounded-2xl shadow-xl">
+            <div class="flex items-center gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-red-400 text-xl"></i>
+                <div>
+                    <h4 class="font-bold text-red-200 text-sm">Süresi Geçen ve İade Edilmeyen Kitaplar Var!</h4>
+                    <p class="text-xs text-red-300">Lütfen aşağıdaki yönetim panelinden geciken kitapları kontrol edin.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- GİZLİ / ŞİFRELİ ADMIN PANELİ (SOL TARAF) -->
+            <div id="adminPanelContainer" class="hidden space-y-6 lg:col-span-1">
+                <div class="bg-[#140e26] border border-purple-800/40 p-6 rounded-3xl shadow-2xl">
+                    <h2 class="text-base font-bold text-white mb-4 flex items-center gap-2">
+                        <i class="fa-solid fa-user-shield text-orange-500"></i> Yönetici Paneli
+                    </h2>
+                    
+                    <!-- Kitap Ekleme (Yayınevi Alanı Eklendi) -->
+                    <form id="bookForm" class="space-y-3 mb-6">
+                        <p class="text-[11px] font-bold text-purple-400 uppercase tracking-wider">Yeni Kitap Tanımla</p>
+                        <input type="text" id="bookTitle" required placeholder="Kitap Adı" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        <input type="text" id="bookAuthor" required placeholder="Yazar Adı" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        <input type="text" id="bookPublisher" placeholder="Yayınevi Adı (Örn: İş Bankası)" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        
+                        <select id="bookCategory" required class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white focus:outline-none focus:border-orange-500">
+                            <option value="Roman">Roman</option>
+                            <option value="Çocuk Kitapları">Çocuk Kitapları</option>
+                            <option value="Araştırma-İnceleme">Araştırma-İnceleme</option>
+                            <option value="Şiir">Şiir</option>
+                            <option value="Felsefe-Düşünce">Felsefe-Düşünce</option>
+                            <option value="Tarih">Tarih</option>
+                            <option value="Hikaye">Hikaye</option>
+                            <option value="Bilim-Teknoloji">Bilim-Teknoloji</option>
+                            <option value="Kişisel Gelişim">Kişisel Gelişim</option>
+                        </select>
+
+                        <textarea id="bookDescription" placeholder="Kitap Özeti / Açıklaması (İsteğe bağlı)" rows="2" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500"></textarea>
+
+                        <div>
+                            <label class="block text-xs font-medium text-purple-300 mb-1">Kitap Görseli Yükle (İsteğe bağlı)</label>
+                            <input type="file" id="bookImageFile" accept="image/*" class="w-full text-xs text-purple-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-purple-900 file:text-purple-200 hover:file:bg-purple-800">
+                        </div>
+
+                        <input type="number" id="bookQuantity" min="1" value="1" required placeholder="Adet" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        <button type="submit" class="w-full bg-gradient-to-r from-orange-600 to-purple-600 hover:from-orange-500 hover:to-purple-500 text-white font-medium py-2.5 rounded-xl text-xs transition shadow-lg">Kitabı Kaydet</button>
+                    </form>
+
+                    <!-- Ödünç Ver -->
+                    <form id="loanForm" class="space-y-3 pt-4 border-t border-purple-900/50">
+                        <p class="text-[11px] font-bold text-purple-400 uppercase tracking-wider">Ödünç İşlemi</p>
+                        <select id="loanBookSelect" required class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white focus:outline-none focus:border-orange-500">
+                            <option value="">Kitap seçiniz...</option>
+                        </select>
+                        <input type="text" id="loanMemberName" required placeholder="Alan Kişi (Ad Soyad)" class="w-full px-3.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        <div class="grid grid-cols-2 gap-2">
+                            <input type="date" id="loanDate" required class="w-full px-2.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white focus:outline-none focus:border-orange-500">
+                            <input type="number" id="loanPeriodDays" value="14" min="1" required placeholder="Gün" class="w-full px-2.5 py-2.5 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none focus:border-orange-500">
+                        </div>
+                        <button type="submit" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-medium py-2.5 rounded-xl text-xs transition border border-purple-700/50 shadow">Ödünç Ver</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- ANA KİTAP ENVANTERİ VE YAYINEVİ DAĞILIMI -->
+            <div id="mainContentArea" class="lg:col-span-3 space-y-6">
+                
+                <!-- YAYINEVİ & STOK DAĞILIMI (HERKES GÖRÜR) -->
+                <div class="bg-[#140e26] border border-purple-900/50 p-6 rounded-3xl shadow-2xl">
+                    <h2 class="text-base font-bold text-white mb-4 flex items-center gap-2">
+                        <i class="fa-solid fa-chart-pie text-orange-500"></i> Yayınevi & Stok Dağılımı
+                    </h2>
+                    <div id="publisherStatsContainer" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                        <!-- Dinamik Yayınevi İstatistikleri -->
+                    </div>
+                </div>
+
+                <!-- Kitap Kataloğu ve Filtreler -->
+                <div class="bg-[#140e26] border border-purple-900/50 p-6 rounded-3xl shadow-2xl">
+                    <div class="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
+                        <h2 class="text-base font-bold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-books text-orange-500"></i> Kütüphane Kitap Kataloğu
+                        </h2>
+                        <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
+                            <!-- Tür Filtresi -->
+                            <select id="categoryFilter" class="px-3.5 py-2 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white focus:outline-none flex-1 md:flex-initial">
+                                <option value="Tümü">Tüm Türler</option>
+                                <option value="Roman">Roman</option>
+                                <option value="Çocuk Kitapları">👶 Çocuk Kitapları</option>
+                                <option value="Araştırma-İnceleme">Araştırma-İnceleme</option>
+                                <option value="Şiir">Şiir</option>
+                                <option value="Felsefe-Düşünce">Felsefe-Düşünce</option>
+                                <option value="Tarih">Tarih</option>
+                                <option value="Hikaye">Hikaye</option>
+                                <option value="Bilim-Teknoloji">Bilim-Teknoloji</option>
+                                <option value="Kişisel Gelişim">Kişisel Gelişim</option>
+                            </select>
+
+                            <!-- Arama (Yayınevi de dahil aranır) -->
+                            <div class="relative flex-1 md:w-48">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-purple-400 text-xs"><i class="fa-solid fa-search"></i></span>
+                                <input type="text" id="searchInput" placeholder="Kitap, yazar veya yayınevi ara..." class="w-full pl-8 pr-3.5 py-2 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white placeholder-purple-400 focus:outline-none">
+                            </div>
+
+                            <!-- Sıralama -->
+                            <select id="sortSelect" class="px-3.5 py-2 rounded-xl border border-purple-900 text-xs bg-[#1f1738] text-white focus:outline-none">
+                                <option value="az">Kitap: A - Z</option>
+                                <option value="za">Kitap: Z - A</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-[#1f1738]/50 text-purple-400 text-xs uppercase border-b border-purple-900/50">
+                                    <th class="p-4 font-semibold">Kitap & Kapak</th>
+                                    <th class="p-4 font-semibold">Yazar</th>
+                                    <th class="p-4 font-semibold">Yayınevi</th>
+                                    <th class="p-4 font-semibold">Tür</th>
+                                    <th class="p-4 font-semibold text-center">Toplam Adet</th>
+                                    <th class="p-4 font-semibold text-center">Raftaki</th>
+                                    <th class="p-4 font-semibold text-right">İşlem</th>
+                                </tr>
+                            </thead>
+                            <tbody id="booksTableBody" class="divide-y divide-purple-900/30 text-purple-100">
+                                <!-- Dinamik -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Ödünç Verilenler ve Gecikenler Tablosu (SADECE ADMİN) -->
+                <div id="adminLoansSection" class="hidden bg-[#140e26] border border-purple-900/50 p-6 rounded-3xl shadow-2xl">
+                    <h2 class="text-base font-bold text-white mb-4 flex items-center gap-2">
+                        <i class="fa-solid fa-clock-rotate-left text-orange-500"></i> Aktif Ödünçler ve Gecikenler Yönetimi (Gizli Admin Alanı)
+                    </h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-[#1f1738]/50 text-purple-400 text-xs uppercase border-b border-purple-900/50">
+                                    <th class="p-4 font-semibold">Kitap</th>
+                                    <th class="p-4 font-semibold">Alan Üye</th>
+                                    <th class="p-4 font-semibold">Alış Tarihi</th>
+                                    <th class="p-4 font-semibold">İade Tarihi</th>
+                                    <th class="p-4 font-semibold">Durum</th>
+                                    <th class="p-4 font-semibold text-right">İşlem</th>
+                                </tr>
+                            </thead>
+                            <tbody id="loansTableBody" class="divide-y divide-purple-900/30 text-purple-100">
+                                <!-- Dinamik -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- KİTAP DETAY / AÇIKLAMA MODALI -->
+    <div id="bookModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-[#140e26] border border-purple-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl relative text-purple-100">
+            <button onclick="closeModal()" class="absolute top-4 right-4 text-purple-400 hover:text-white text-lg"><i class="fa-solid fa-xmark"></i></button>
+            <div class="flex gap-4 items-start">
+                <img id="modalImage" src="" class="w-24 h-32 object-cover rounded-2xl shadow border border-purple-800">
+                <div class="space-y-1">
+                    <h3 id="modalTitle" class="text-lg font-bold text-white"></h3>
+                    <p id="modalAuthor" class="text-sm text-purple-300"></p>
+                    <p id="modalPublisher" class="text-xs text-orange-300"></p>
+                    <p id="modalCategory" class="text-xs text-orange-400 font-semibold"></p>
+                </div>
+            </div>
+            <div class="border-t border-purple-900/60 pt-3">
+                <h4 class="text-xs font-bold text-purple-400 uppercase mb-1">Kitap Açıklaması / Özeti</h4>
+                <p id="modalDesc" class="text-sm text-purple-200 bg-[#1f1738] p-3.5 rounded-2xl max-h-40 overflow-y-auto border border-purple-900/50"></p>
+            </div>
+            <button onclick="closeModal()" class="w-full bg-[#1f1738] hover:bg-[#271d47] text-purple-200 font-medium py-2.5 rounded-xl text-xs transition border border-purple-800">Kapat</button>
+        </div>
+    </div>
+
+</body>
+</html>
